@@ -11,6 +11,10 @@ const cleanupStaleState = () => {
       window.localStorage.removeItem('isWebSocketReconnecting');
       window.localStorage.removeItem('pendingOffer');
       window.localStorage.removeItem('pendingAnswer');
+      window.localStorage.removeItem('lastWebRTCInitTime');
+      window.localStorage.removeItem('lastConnectionRequestTime');
+      window.localStorage.removeItem('lastOfferTime');
+      window.localStorage.removeItem('webrtcRetryCount');
       
       console.log('[页面加载] 已清除旧的连接状态标志');
     }
@@ -21,6 +25,37 @@ const cleanupStaleState = () => {
 
 // 立即执行
 cleanupStaleState();
+
+// 添加完全清理所有存储的函数
+const cleanAllStorage = () => {
+  try {
+    if (typeof window !== 'undefined') {
+      // 清除所有WebRTC相关的本地存储
+      window.localStorage.removeItem('isConnecting');
+      window.localStorage.removeItem('isWebSocketReconnecting');
+      window.localStorage.removeItem('pendingOffer');
+      window.localStorage.removeItem('pendingAnswer');
+      window.localStorage.removeItem('lastWebSocketConnectTime');
+      window.localStorage.removeItem('lastWebRTCInitTime');
+      window.localStorage.removeItem('lastConnectionRequestTime');
+      window.localStorage.removeItem('lastOfferTime');
+      window.localStorage.removeItem('webrtcRetryCount');
+      window.localStorage.removeItem('webrtcDeviceId');
+      window.localStorage.removeItem('webrtcSessionId');
+      window.localStorage.removeItem('webrtcRole');
+      
+      console.log('[用户操作] 已清除所有存储的WebRTC状态和标识');
+      
+      // 提示用户刷新页面获取新的设备ID
+      if (typeof window !== 'undefined') {
+        window.alert('所有本地缓存已清除！请刷新页面以获取新的设备ID。');
+        window.location.reload();
+      }
+    }
+  } catch (e) {
+    console.error('清理所有存储失败:', e);
+  }
+};
 
 export default function SimplePage() {
   const [role, setRole] = useState<'sender' | 'receiver' | null>(null);
@@ -51,6 +86,12 @@ export default function SimplePage() {
   
   // 使用ref直接引用WebRTC连接，避免异步状态更新问题
   const rtcConnectionRef = useRef<RTCPeerConnection | null>(null);
+  
+  // 增加一个引用，用于保存selectedFiles，避免React状态管理问题
+  const selectedFilesRef = useRef<File[]>([]);
+  
+  // 增加数据通道的ref引用，解决数据通道状态同步问题
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
   
   // 使用ref存储文件传输状态
   const fileChunkSize = 16384; // 16KB 块大小
@@ -213,6 +254,7 @@ export default function SimplePage() {
     newSocket.off('connection_status');
     newSocket.off('disconnect');
     newSocket.off('peer');
+    newSocket.off('peer_event');
     newSocket.off('offer');
     newSocket.off('answer');
     newSocket.off('ice_candidate');
@@ -235,7 +277,7 @@ export default function SimplePage() {
       }
     });
     
-    newSocket.on('peer', (data: any) => {
+    newSocket.on('peer_event', (data: any) => {
       log(`收到对等事件: ${data.event}, 从: ${data.deviceId} [${eventId}]`);
       
       if (data.event === 'joined') {
@@ -771,7 +813,9 @@ export default function SimplePage() {
   const setupDataChannel = (dataChannel: RTCDataChannel) => {
     dataChannel.onopen = () => {
       log(`数据通道已打开: ${dataChannel.label}`);
+      // 同时更新React状态和ref
       setChannel(dataChannel);
+      dataChannelRef.current = dataChannel;
       updateConnectionDetails(localConnection, 'open');
       
       // 如果是发送方且有文件信息，发送文件信息
@@ -791,12 +835,24 @@ export default function SimplePage() {
             log(`发送文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
           }
         }, 1000);
+      } else if (currentRole === 'receiver') {
+        // 接收方主动请求文件信息
+        log('作为接收方，主动请求文件信息...');
+        try {
+          dataChannel.send(JSON.stringify({
+            type: 'request_files_info'
+          }));
+          log('已发送文件信息请求');
+        } catch (error) {
+          log(`发送文件信息请求失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     };
     
     dataChannel.onclose = () => {
       log('数据通道已关闭');
       setChannel(null);
+      dataChannelRef.current = null;
       updateConnectionDetails(localConnection, 'closed');
     };
     
@@ -826,9 +882,10 @@ export default function SimplePage() {
           if (fileInfo.length > 0) {
             log(`发送 ${fileInfo.length} 个文件的信息到接收方`);
             try {
-              // 使用传入的dataChannel参数
-              if (dataChannel.readyState === 'open') {
-                dataChannel.send(JSON.stringify({
+              // 直接使用当前上下文中的数据通道
+              const currentChannel = channel;
+              if (currentChannel && currentChannel.readyState === 'open') {
+                currentChannel.send(JSON.stringify({
                   type: 'files_info',
                   files: fileInfo
                 }));
@@ -1294,6 +1351,22 @@ export default function SimplePage() {
     const currentRole = localStorage.getItem('webrtcRole') || role;
     log(`尝试建立连接，当前角色: ${currentRole}，尝试次数: ${retryCount + 1}/${maxRetries + 1}`);
     
+    // 如果是发送方，尝试从localStorage恢复文件信息
+    if (currentRole === 'sender' && fileInfo.length === 0) {
+      const savedFileInfo = localStorage.getItem('webrtcFileInfo');
+      if (savedFileInfo) {
+        try {
+          const parsedFileInfo = JSON.parse(savedFileInfo);
+          if (Array.isArray(parsedFileInfo) && parsedFileInfo.length > 0) {
+            setFileInfo(parsedFileInfo);
+            log(`连接前从localStorage恢复了 ${parsedFileInfo.length} 个文件的信息`);
+          }
+        } catch (error) {
+          log(`尝试恢复文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    
     try {
       // 关闭现有连接
       if (rtcConnectionRef.current) {
@@ -1335,31 +1408,57 @@ export default function SimplePage() {
                   localStorage.setItem('isConnecting', 'false');
                   
                   // 添加: 如果是发送方且有文件信息，确保在连接建立后发送
-                  if (currentRole === 'sender' && fileInfo.length > 0) {
-                    // 通过WebSocket发送
-                    if (socketRef.current && socketRef.current.connected) {
-                      log('连接已建立，通过WebSocket发送文件信息...');
-                      socketRef.current.emit('files_info', { files: fileInfo });
-                    }
-                    
-                    // 获取当前的数据通道 - 修复引用问题
-                    const currentChannel = channel;
-                    
-                    // 如果数据通道已开启，也通过数据通道发送
-                    if (currentChannel && currentChannel.readyState === 'open') {
-                      log('连接已建立，通过数据通道发送文件信息...');
-                      setTimeout(() => {
+                  if (currentRole === 'sender') {
+                    // 再次尝试从localStorage获取文件信息（如果状态中没有）
+                    let currentFileInfo = fileInfo;
+                    if (currentFileInfo.length === 0) {
+                      const savedFileInfo = localStorage.getItem('webrtcFileInfo');
+                      if (savedFileInfo) {
                         try {
-                          currentChannel.send(JSON.stringify({
-                            type: 'files_info',
-                            files: fileInfo
-                          }));
-                          log('已通过数据通道发送文件信息');
+                          const parsedFileInfo = JSON.parse(savedFileInfo);
+                          if (Array.isArray(parsedFileInfo) && parsedFileInfo.length > 0) {
+                            currentFileInfo = parsedFileInfo;
+                            setFileInfo(parsedFileInfo);
+                            log(`连接成功后，从localStorage恢复了 ${parsedFileInfo.length} 个文件的信息`);
+                          }
                         } catch (error) {
-                          log(`通过数据通道发送文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+                          log(`尝试恢复文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
                         }
-                      }, 1000);
+                      }
                     }
+                    
+                    if (currentFileInfo.length > 0) {
+                      // 通过WebSocket发送
+                      if (socketRef.current && socketRef.current.connected) {
+                        log('连接已建立，通过WebSocket发送文件信息...');
+                        socketRef.current.emit('files_info', { files: currentFileInfo });
+                      }
+                      
+                      // 获取当前的数据通道 - 修复引用问题
+                      const currentChannel = channel;
+                      
+                      // 如果数据通道已开启，也通过数据通道发送
+                      if (currentChannel && currentChannel.readyState === 'open') {
+                        log('连接已建立，通过数据通道发送文件信息...');
+                        setTimeout(() => {
+                          try {
+                            currentChannel.send(JSON.stringify({
+                              type: 'files_info',
+                              files: currentFileInfo
+                            }));
+                            log('已通过数据通道发送文件信息');
+                          } catch (error) {
+                            log(`通过数据通道发送文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+                          }
+                        }, 1000);
+                      } else {
+                        log('数据通道未准备好，稍后将通过数据通道事件发送文件信息');
+                      }
+                    } else {
+                      log('没有可发送的文件信息，请检查是否选择了文件');
+                    }
+                  } else {
+                    log('作为接收方，连接已建立，准备接收文件');
                   }
                 } else if (retryCount >= maxRetries) {
                   log(`已达到最大重试次数 (${maxRetries})，请尝试手动连接或刷新页面`);
@@ -1378,31 +1477,57 @@ export default function SimplePage() {
                   
                   // 添加: 如果是发送方且有文件信息，确保在连接建立后发送
                   const currentRole = localStorage.getItem('webrtcRole') || role;
-                  if (currentRole === 'sender' && fileInfo.length > 0) {
-                    // 通过WebSocket发送
-                    if (socketRef.current && socketRef.current.connected) {
-                      log('连接已建立，通过WebSocket发送文件信息...');
-                      socketRef.current.emit('files_info', { files: fileInfo });
-                    }
-                    
-                    // 获取当前的数据通道 - 修复引用问题
-                    const currentChannel = channel;
-                    
-                    // 如果数据通道已开启，也通过数据通道发送
-                    if (currentChannel && currentChannel.readyState === 'open') {
-                      log('连接已建立，通过数据通道发送文件信息...');
-                      setTimeout(() => {
+                  if (currentRole === 'sender') {
+                    // 再次尝试从localStorage获取文件信息（如果状态中没有）
+                    let currentFileInfo = fileInfo;
+                    if (currentFileInfo.length === 0) {
+                      const savedFileInfo = localStorage.getItem('webrtcFileInfo');
+                      if (savedFileInfo) {
                         try {
-                          currentChannel.send(JSON.stringify({
-                            type: 'files_info',
-                            files: fileInfo
-                          }));
-                          log('已通过数据通道发送文件信息');
+                          const parsedFileInfo = JSON.parse(savedFileInfo);
+                          if (Array.isArray(parsedFileInfo) && parsedFileInfo.length > 0) {
+                            currentFileInfo = parsedFileInfo;
+                            setFileInfo(parsedFileInfo);
+                            log(`连接状态变化时，从localStorage恢复了 ${parsedFileInfo.length} 个文件的信息`);
+                          }
                         } catch (error) {
-                          log(`通过数据通道发送文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+                          log(`尝试恢复文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
                         }
-                      }, 1000);
+                      }
                     }
+                    
+                    if (currentFileInfo.length > 0) {
+                      // 通过WebSocket发送
+                      if (socketRef.current && socketRef.current.connected) {
+                        log('连接已建立，通过WebSocket发送文件信息...');
+                        socketRef.current.emit('files_info', { files: currentFileInfo });
+                      }
+                      
+                      // 获取当前的数据通道 - 修复引用问题
+                      const currentChannel = channel;
+                      
+                      // 如果数据通道已开启，也通过数据通道发送
+                      if (currentChannel && currentChannel.readyState === 'open') {
+                        log('连接已建立，通过数据通道发送文件信息...');
+                        setTimeout(() => {
+                          try {
+                            currentChannel.send(JSON.stringify({
+                              type: 'files_info',
+                              files: currentFileInfo
+                            }));
+                            log('已通过数据通道发送文件信息');
+                          } catch (error) {
+                            log(`通过数据通道发送文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+                          }
+                        }, 1000);
+                      } else {
+                        log('数据通道未准备好，稍后将通过数据通道事件发送文件信息');
+                      }
+                    } else {
+                      log('没有可发送的文件信息，请检查是否选择了文件');
+                    }
+                  } else {
+                    log('作为接收方，连接已建立，准备接收文件');
                   }
                 }
               };
@@ -1484,7 +1609,10 @@ export default function SimplePage() {
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files.length > 0) {
       const files = Array.from(event.target.files);
+      
+      // 更新React状态和ref
       setSelectedFiles(files);
+      selectedFilesRef.current = files;
       
       // 创建文件信息数组
       const filesInfo = files.map(file => ({
@@ -1497,10 +1625,34 @@ export default function SimplePage() {
       setFileInfo(filesInfo);
       log(`已选择 ${files.length} 个文件，总大小: ${formatBytes(files.reduce((sum, file) => sum + file.size, 0))}`);
       
+      // 将文件信息保存到localStorage，确保在连接重试过程中不会丢失
+      try {
+        localStorage.setItem('webrtcFileInfo', JSON.stringify(filesInfo));
+        
+        // 额外存储文件状态持久化标记
+        localStorage.setItem('webrtcHasSelectedFiles', 'true');
+        log('已将文件信息保存到localStorage');
+      } catch (error) {
+        log(`保存文件信息到localStorage失败: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      
       // 如果已连接，发送文件信息
       if (socketRef.current && socketRef.current.connected) {
         socketRef.current.emit('files_info', { files: filesInfo });
         log('已向接收方发送文件信息');
+      }
+      
+      // 如果数据通道已打开，也通过数据通道发送
+      if (channel && channel.readyState === 'open') {
+        try {
+          channel.send(JSON.stringify({
+            type: 'files_info',
+            files: filesInfo
+          }));
+          log('已通过数据通道发送文件信息');
+        } catch (error) {
+          log(`通过数据通道发送文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   };
@@ -1520,7 +1672,10 @@ export default function SimplePage() {
   
   // 发送文件数据
   const sendFile = async (file: File, fileId: string) => {
-    if (!channel || channel.readyState !== 'open') {
+    // 优先使用ref引用的数据通道，其次使用React状态，确保获取最新数据通道
+    const currentChannel = dataChannelRef.current || channel;
+    
+    if (!currentChannel || currentChannel.readyState !== 'open') {
       log('数据通道未打开，无法发送文件');
       return;
     }
@@ -1540,7 +1695,7 @@ export default function SimplePage() {
       log(`开始发送文件: ${file.name} (${formatBytes(file.size)})`);
       
       // 发送文件开始命令
-      channel.send(JSON.stringify({
+      currentChannel.send(JSON.stringify({
         type: 'file-start',
         fileId,
         name: file.name,
@@ -1559,22 +1714,25 @@ export default function SimplePage() {
       };
       
       reader.onload = async (e) => {
-        if (e.target?.result && channel.readyState === 'open') {
+        // 每次读取时重新获取通道状态，避免在文件传输过程中通道状态改变
+        const activeChannel = dataChannelRef.current || channel;
+        
+        if (e.target?.result && activeChannel && activeChannel.readyState === 'open') {
           const chunk = e.target.result;
           
           try {
             // 发送二进制数据 - 确保类型正确
             if (chunk instanceof ArrayBuffer) {
-              channel.send(chunk);
+              activeChannel.send(chunk);
             } else if (typeof chunk === 'string') {
-              channel.send(chunk);
+              activeChannel.send(chunk);
             } else {
               throw new Error('不支持的数据类型');
             }
             
             // 假设是ArrayBuffer类型
             const byteLength = chunk instanceof ArrayBuffer ? chunk.byteLength : 
-                               (typeof chunk === 'string' ? new TextEncoder().encode(chunk).length : 0);
+                             (typeof chunk === 'string' ? new TextEncoder().encode(chunk).length : 0);
             
             offset += byteLength;
             
@@ -1587,7 +1745,7 @@ export default function SimplePage() {
               readSlice(offset);
             } else {
               // 发送文件结束命令
-              channel.send(JSON.stringify({
+              activeChannel.send(JSON.stringify({
                 type: 'file-end',
                 fileId
               }));
@@ -1599,6 +1757,13 @@ export default function SimplePage() {
             log(`发送文件块失败: ${error instanceof Error ? error.message : String(error)}`);
             transfersInProgress.current[fileId] = false;
           }
+        } else {
+          if (!activeChannel) {
+            log('数据通道已丢失，无法继续发送文件');
+          } else if (activeChannel.readyState !== 'open') {
+            log(`数据通道状态改变为 ${activeChannel.readyState}，无法继续发送文件`);
+          }
+          transfersInProgress.current[fileId] = false;
         }
       };
       
@@ -1617,13 +1782,106 @@ export default function SimplePage() {
   
   // 发送所有选中文件
   const sendAllFiles = () => {
-    if (selectedFiles.length === 0) {
-      log('没有选择文件');
+    // 首先检查ref中的文件数组
+    let filesToSend = selectedFilesRef.current;
+    
+    // 如果ref为空，检查状态
+    if (filesToSend.length === 0) {
+      filesToSend = selectedFiles;
+    }
+    
+    // 如果仍然为空，尝试从DOM中恢复
+    if (filesToSend.length === 0) {
+      log('状态中没有选择的文件，尝试查找文件输入...');
+      
+      // 从localStorage恢复文件信息
+      const savedFileInfo = localStorage.getItem('webrtcFileInfo');
+      const hasSelectedFiles = localStorage.getItem('webrtcHasSelectedFiles') === 'true';
+      
+      if (savedFileInfo && hasSelectedFiles) {
+        try {
+          const parsedFileInfo = JSON.parse(savedFileInfo);
+          if (Array.isArray(parsedFileInfo) && parsedFileInfo.length > 0) {
+            log(`从localStorage恢复了 ${parsedFileInfo.length} 个文件的信息`);
+            
+            // 获取文件输入元素 - 尝试多种选择器
+            const fileInputs = document.querySelectorAll('input[type="file"]');
+            let foundFiles = false;
+            
+            for (const input of fileInputs) {
+              const inputElement = input as HTMLInputElement;
+              if (inputElement.files && inputElement.files.length > 0) {
+                const files = Array.from(inputElement.files);
+                log(`找到了文件输入，包含 ${files.length} 个文件`);
+                
+                // 更新状态和ref
+                setSelectedFiles(files);
+                selectedFilesRef.current = files;
+                foundFiles = true;
+                
+                // 发送找到的文件
+                log(`开始传输 ${files.length} 个文件`);
+                files.forEach((file, index) => {
+                  const fileId = parsedFileInfo[index]?.id || `file_${Math.random().toString(36).substring(2, 15)}`;
+                  setTimeout(() => sendFile(file, fileId), index * 500);
+                });
+                break;
+              }
+            }
+            
+            if (!foundFiles) {
+              log('未找到包含文件的输入元素，尝试创建新的文件请求');
+              
+              // 提示用户重新选择文件
+              if (typeof window !== 'undefined' && confirm('需要重新选择文件才能发送。现在重新选择文件吗？')) {
+                const newInput = document.createElement('input');
+                newInput.type = 'file';
+                newInput.multiple = true;
+                newInput.style.display = 'none';
+                
+                // 添加选择文件事件处理
+                newInput.onchange = (e) => {
+                  const target = e.target as HTMLInputElement;
+                  if (target.files && target.files.length > 0) {
+                    const files = Array.from(target.files);
+                    
+                    // 更新状态和ref
+                    setSelectedFiles(files);
+                    selectedFilesRef.current = files;
+                    
+                    // 再次发送文件
+                    log(`用户重新选择了 ${files.length} 个文件，开始传输`);
+                    files.forEach((file, index) => {
+                      const fileId = parsedFileInfo[index]?.id || `file_${Math.random().toString(36).substring(2, 15)}`;
+                      setTimeout(() => sendFile(file, fileId), index * 500);
+                    });
+                    
+                    // 清理临时输入元素
+                    document.body.removeChild(newInput);
+                  }
+                };
+                
+                // 添加到DOM并触发点击
+                document.body.appendChild(newInput);
+                newInput.click();
+                return;
+              }
+            }
+            
+            return; // 已经处理了文件或请求用户重新选择，直接返回
+          }
+        } catch (error) {
+          log(`解析文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      
+      log('没有找到文件或用户取消了选择');
       return;
     }
     
-    // 发送每个文件
-    selectedFiles.forEach((file, index) => {
+    // 如果找到了文件，发送它们
+    log(`开始发送 ${filesToSend.length} 个文件`);
+    filesToSend.forEach((file, index) => {
       const fileId = fileInfo[index]?.id || `file_${Math.random().toString(36).substring(2, 15)}`;
       setTimeout(() => sendFile(file, fileId), index * 500); // 稍微错开时间
     });
@@ -1631,27 +1889,37 @@ export default function SimplePage() {
   
   // 确认接收文件
   const confirmReceiveFiles = () => {
-    if (channel && channel.readyState === 'open') {
-      channel.send(JSON.stringify({
+    // 优先使用ref引用的数据通道
+    const currentChannel = dataChannelRef.current || channel;
+    
+    if (currentChannel && currentChannel.readyState === 'open') {
+      currentChannel.send(JSON.stringify({
         type: 'file-confirm',
         confirmed: true
       }));
       
       log('已确认接收文件');
       setShowFileConfirm(false);
+    } else {
+      log('数据通道未开启，无法确认接收文件');
     }
   };
   
   // 拒绝接收文件
   const rejectReceiveFiles = () => {
-    if (channel && channel.readyState === 'open') {
-      channel.send(JSON.stringify({
+    // 优先使用ref引用的数据通道
+    const currentChannel = dataChannelRef.current || channel;
+    
+    if (currentChannel && currentChannel.readyState === 'open') {
+      currentChannel.send(JSON.stringify({
         type: 'file-confirm',
         confirmed: false
       }));
       
       log('已拒绝接收文件');
       setShowFileConfirm(false);
+    } else {
+      log('数据通道未开启，无法拒绝接收文件');
     }
   };
   
@@ -1720,19 +1988,31 @@ export default function SimplePage() {
         case 'file-start':
           log(`开始接收文件: ${data.name} (${formatBytes(data.size)})`);
           
-          // 初始化文件接收
-          setReceivingFiles(prev => ({
-            ...prev,
-            [data.fileId]: {
-              name: data.name,
-              size: data.size,
-              type: data.fileType,
-              progress: 0,
-              buffer: [],
-              received: 0,
-              id: data.fileId
-            }
-          }));
+          // 初始化文件接收 - 使用立即执行的函数确保状态更新被同步执行
+          (async () => {
+            // 创建更新函数，并立即获取更新后的状态
+            const newState = { 
+              ...receivingFiles,
+              [data.fileId]: {
+                name: data.name,
+                size: data.size,
+                type: data.fileType,
+                progress: 0,
+                buffer: [],
+                received: 0,
+                id: data.fileId
+              }
+            };
+            
+            // 立即更新本地状态引用，以便后续文件块可以立即使用
+            // 这里创建一个本地引用，用于后续临时访问
+            Object.assign(receivingFiles, newState);
+            
+            // 然后正式通过React更新状态
+            setReceivingFiles(newState);
+            
+            log(`已初始化文件接收状态: ${data.fileId}`);
+          })();
           break;
           
         case 'file-end':
@@ -1770,7 +2050,7 @@ export default function SimplePage() {
             log(`发送 ${fileInfo.length} 个文件的信息到接收方`);
             try {
               // 直接使用当前上下文中的数据通道
-              const currentChannel = dataChannel;
+              const currentChannel = channel;
               if (currentChannel && currentChannel.readyState === 'open') {
                 currentChannel.send(JSON.stringify({
                   type: 'files_info',
@@ -1810,7 +2090,9 @@ export default function SimplePage() {
         : chunk;
       
       // 找出当前正在接收哪个文件
-      const activeFileIds = Object.keys(receivingFiles).filter(id => receivingFiles[id].progress < 100);
+      const activeFileIds = Object.keys(receivingFiles).filter(id => 
+        receivingFiles[id] && receivingFiles[id].progress < 100
+      );
       
       if (activeFileIds.length === 0) {
         log('收到文件块，但没有活跃的文件传输');
@@ -1819,20 +2101,30 @@ export default function SimplePage() {
       
       // 假设只传一个文件，或者最先开始的文件
       const fileId = activeFileIds[0];
-      const fileData = receivingFiles[fileId];
+      
+      // 检查文件数据是否存在
+      if (!receivingFiles[fileId]) {
+        log(`找不到文件ID: ${fileId}，可能是状态同步问题`);
+        return;
+      }
+      
+      // 直接修改一个本地副本，然后用它来更新状态
+      const updated = {...receivingFiles};
+      const fileData = updated[fileId];
       
       // 添加块到buffer
       const newChunk = new Uint8Array(buffer);
+      fileData.buffer.push(newChunk);
+      fileData.received += newChunk.length;
+      fileData.progress = Math.min(100, Math.round((fileData.received / fileData.size) * 100));
       
-      setReceivingFiles(prev => {
-        const updated = {...prev};
-        if (updated[fileId]) {
-          updated[fileId].buffer.push(newChunk);
-          updated[fileId].received += newChunk.length;
-          updated[fileId].progress = Math.min(100, Math.round((updated[fileId].received / updated[fileId].size) * 100));
-        }
-        return updated;
-      });
+      // 更新状态
+      setReceivingFiles(updated);
+      
+      // 同时更新本地引用，确保下一个块能立即访问到最新状态
+      Object.assign(receivingFiles, updated);
+      
+      log(`处理文件块: ${fileId}, 进度: ${fileData.progress}%`);
       
     } catch (error) {
       log(`处理文件块失败: ${error instanceof Error ? error.message : String(error)}`);
@@ -1866,6 +2158,44 @@ export default function SimplePage() {
   const [offerText, setOfferText] = useState<string>('');
   const [answerText, setAnswerText] = useState<string>('');
   
+  // 添加新的 useEffect 钩子来恢复文件信息
+  // 在组件加载时恢复保存的文件信息
+  useEffect(() => {
+    // 尝试从 localStorage 恢复文件信息
+    const savedFileInfo = localStorage.getItem('webrtcFileInfo');
+    const hasSelectedFiles = localStorage.getItem('webrtcHasSelectedFiles') === 'true';
+    
+    if (savedFileInfo && hasSelectedFiles) {
+      try {
+        const parsedFileInfo = JSON.parse(savedFileInfo);
+        if (Array.isArray(parsedFileInfo) && parsedFileInfo.length > 0) {
+          setFileInfo(parsedFileInfo);
+          log(`从 localStorage 恢复了 ${parsedFileInfo.length} 个文件的信息`);
+          
+          // 尝试查找或请求文件
+          setTimeout(() => {
+            // 如果状态中仍然没有文件，检查DOM
+            if (selectedFiles.length === 0 && selectedFilesRef.current.length === 0) {
+              const fileInputs = document.querySelectorAll('input[type="file"]');
+              for (const input of fileInputs) {
+                const inputElement = input as HTMLInputElement;
+                if (inputElement.files && inputElement.files.length > 0) {
+                  const files = Array.from(inputElement.files);
+                  log(`在DOM中找到了 ${files.length} 个文件`);
+                  setSelectedFiles(files);
+                  selectedFilesRef.current = files;
+                  break;
+                }
+              }
+            }
+          }, 1000);
+        }
+      } catch (error) {
+        log(`解析文件信息失败: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }, []);
+  
   // 修改UI部分的变量名称
   return (
     <div className="container mx-auto p-4 max-w-4xl">
@@ -1879,6 +2209,14 @@ export default function SimplePage() {
           <div className="text-sm font-medium">角色: <span className="font-bold">{role || '未设置'}</span></div>
           {sessionId && <div className="text-sm font-medium">会话ID: <span className="font-bold">{sessionId}</span></div>}
           {roomCode && <div className="text-sm font-medium">房间密码: <span className="font-bold">{roomCode}</span></div>}
+          <div className="mt-2">
+            <button 
+              onClick={cleanAllStorage}
+              className="bg-yellow-500 text-white px-3 py-1 rounded text-sm hover:bg-yellow-600"
+            >
+              清理所有缓存并刷新
+            </button>
+          </div>
         </div>
         
         {/* 未选择角色时显示选择界面 */}

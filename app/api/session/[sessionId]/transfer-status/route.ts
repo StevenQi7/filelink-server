@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '../../../../../lib/redis';
 import { emitToSession } from '../../../../../lib/socket';
+import type { NextRequest } from 'next/server';
 
 export async function POST(
-  request: Request,
-  { params }: { params: { sessionId: string } }
+  request: NextRequest,
+  { params }: { params: Promise<{ sessionId: string }> }
 ) {
   try {
-    const { sessionId } = params;
+    const { sessionId } = await params;
     const body = await request.json();
     const { deviceId, status, progress, error } = body;
 

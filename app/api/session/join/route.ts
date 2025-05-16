@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getSessionByCode, updateSession } from '../../../../lib/redis';
+import type { NextRequest } from 'next/server';
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { code, deviceInfo } = body;
