@@ -206,7 +206,14 @@ export default function SimplePage() {
           socketRef.current = null;
         }
         
-        const newSocket = io(`${window.location.origin}`, {
+        // 确定当前环境并选择适当的连接URL
+        const isProduction = process.env.NODE_ENV === 'production' || 
+                            window.location.hostname !== 'localhost';
+        const connectionURL = isProduction ? window.location.origin : window.location.origin;
+        
+        log(`环境: ${isProduction ? '生产环境' : '开发环境'}, 连接URL: ${connectionURL}`);
+        
+        const newSocket = io(connectionURL, {
           query: {
             sessionId: sid,
             deviceId: currentDeviceId,
@@ -215,11 +222,8 @@ export default function SimplePage() {
           reconnection: true,
           reconnectionAttempts: 5,
           reconnectionDelay: 1000,
-          // 增加超时，避免多个连接同时建立
           timeout: 10000,
-          // 确保只有一个socket实例
           forceNew: true,
-          // 添加path配置，确保与服务器端一致
           path: '/socket.io/'
         });
         

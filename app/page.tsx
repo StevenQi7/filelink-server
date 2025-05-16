@@ -134,6 +134,7 @@ export default function Home() {
     // 在客户端动态导入 socket.io-client
     import('socket.io-client').then(({ io }) => {
       const socket = io(`${window.location.origin}`, {
+        path: '/socket.io/',
         query: {
           sessionId,
           deviceId
