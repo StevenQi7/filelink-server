@@ -16,6 +16,7 @@ app.prepare().then(() => {
   server.listen(3000, (err) => {
     if (err) throw err;
     console.log('> Ready on http://localhost:3000');
+    console.log('运行环境:', dev ? '开发模式' : '生产模式');
     
     // 初始化 Socket.io 服务
     initSocketServer(server);

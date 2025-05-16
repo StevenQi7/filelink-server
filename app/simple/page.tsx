@@ -218,7 +218,9 @@ export default function SimplePage() {
           // 增加超时，避免多个连接同时建立
           timeout: 10000,
           // 确保只有一个socket实例
-          forceNew: true
+          forceNew: true,
+          // 添加path配置，确保与服务器端一致
+          path: '/socket.io/'
         });
         
         // 设置连接超时处理
@@ -981,7 +983,9 @@ export default function SimplePage() {
                   deviceId: currentDeviceId,
                   connectId
                 },
-                reconnection: false
+                reconnection: false,
+                // 添加path配置，确保与服务器端一致
+                path: '/socket.io/'
               });
               
               // 设置临时socket事件处理器
@@ -1116,7 +1120,9 @@ export default function SimplePage() {
                   deviceId: currentDeviceId,
                   connectId
                 },
-                reconnection: false
+                reconnection: false,
+                // 添加path配置，确保与服务器端一致
+                path: '/socket.io/'
               });
               
               // 设置临时socket事件处理器
