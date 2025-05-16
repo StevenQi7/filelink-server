@@ -718,8 +718,8 @@ export default function SimplePage() {
       // 创建连接
       const configuration = {
         iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun.skydrone.aero:3478' },
+          { urls: 'stun:stun.engineeredarts.co.uk:3478' },
           {
             urls: 'turn:numb.viagenie.ca',
             credential: 'muazkh',
