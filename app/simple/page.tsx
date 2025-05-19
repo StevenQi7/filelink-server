@@ -735,7 +735,7 @@ export default function SimplePage() {
           }
         ],
         iceCandidatePoolSize: 10,
-        iceTransportPolicy: forceTcp ? 'relay' as RTCIceTransportPolicy : 'all' as RTCIceTransportPolicy,
+        iceTransportPolicy: 'relay', // 强制只用 TURN
         bundlePolicy: 'max-bundle' as RTCBundlePolicy,
         rtcpMuxPolicy: 'require' as RTCRtcpMuxPolicy
       };
