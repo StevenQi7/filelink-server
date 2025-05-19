@@ -725,69 +725,14 @@ export default function SimplePage() {
       // 创建连接
       let configuration: RTCConfiguration = {
         iceServers: [
-          // 公共STUN服务器
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' },
-          { urls: 'stun:stun.stunprotocol.org:3478' },
-          
-          // Cloudflare的STUN服务器
-          { urls: 'stun:stun.cloudflare.com:3478' },
-          
-          // OpenRelay的TURN服务器 - 改为更稳定的配置
           {
-            urls: [
-              'turn:openrelay.metered.ca:443?transport=tcp',
-              'turn:openrelay.metered.ca:80?transport=tcp'
-            ],
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          },
-          
-          // 使用更可靠的TURN服务器配置
-          {
-            urls: [
-              'turn:global.relay.metered.ca:80?transport=tcp',
-              'turns:global.relay.metered.ca:443'
-            ],
-            username: 'bc33d27b1e908142ae6c1a29',
-            credential: 'gNO37vVkk5DTNWWK'
-          },
-          
-          // 本地开发用TURN服务器 - 公开的可用服务器
-          {
-            urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
-            username: 'webrtc',
-            credential: 'webrtc'
-          },
-          
-          // 追加最新的Metered免费TURN服务器配置
-          { urls: 'stun:stun.relay.metered.ca:80' },
-          {
-            urls: 'turn:standard.relay.metered.ca:80?transport=tcp',
-            username: 'e7ed58cf6e56cbc9868f7c9f',
-            credential: 'iMb63RTTwmxMPKPh'
+            urls: "turn:107.175.53.199:3478?transport=udp",
+            username: "admin", // 替换为实际用户名
+            credential: "admin" // 替换为实际密码
           },
           {
-            urls: 'turn:standard.relay.metered.ca:80',
-            username: 'e7ed58cf6e56cbc9868f7c9f',
-            credential: 'iMb63RTTwmxMPKPh'
-          },
-          {
-            urls: 'turn:standard.relay.metered.ca:443',
-            username: 'e7ed58cf6e56cbc9868f7c9f',
-            credential: 'iMb63RTTwmxMPKPh'
-          },
-          {
-            urls: 'turns:standard.relay.metered.ca:443',
-            username: 'e7ed58cf6e56cbc9868f7c9f',
-            credential: 'iMb63RTTwmxMPKPh'
-          },
-          
-          // 追加Twilio的STUN服务器
-          { urls: 'stun:global.stun.twilio.com:3478' }
+            urls: "stun:107.175.53.199:3478"
+          }
         ],
         iceCandidatePoolSize: 10,
         iceTransportPolicy: forceTcp ? 'relay' as RTCIceTransportPolicy : 'all' as RTCIceTransportPolicy,
