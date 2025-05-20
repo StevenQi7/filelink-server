@@ -103,7 +103,11 @@ fileInput.onchange = () => {
 };
 
 function connectWS() {
-    ws = new WebSocket('ws://localhost:8001');
+    // 使用相对路径，适应任何部署环境
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}`;
+    
+    ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
         ws.send(JSON.stringify({ 
