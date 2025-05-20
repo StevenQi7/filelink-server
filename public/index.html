@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件传输测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+        .panel {
+            flex: 1;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .file-list {
+            margin-top: 20px;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+            padding: 10px;
+            border: 1px solid #eee;
+            border-radius: 3px;
+        }
+        .progress {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+        .progress-bar {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        input[type="text"] {
+            padding: 8px;
+            margin: 5px 0;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .status.error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        .status.success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+    </style>
+</head>
+<body>
+    <h1>文件传输测试</h1>
+    <div class="container">
+        <div class="panel">
+            <h2>发送方</h2>
+            <div>
+                <input type="file" id="fileInput" multiple>
+                <button id="createSession">创建会话</button>
+                <div id="sessionInfo" style="display: none;">
+                    <p>会话 ID: <span id="sessionId"></span></p>
+                    <p>加密密钥: <span id="encryptionKey"></span></p>
+                </div>
+                <div id="senderStatus" class="status"></div>
+            </div>
+            <div class="file-list" id="senderFileList"></div>
+        </div>
+        <div class="panel">
+            <h2>接收方</h2>
+            <div>
+                <input type="text" id="joinSessionId" placeholder="输入会话 ID">
+                <input type="text" id="joinEncryptionKey" placeholder="输入加密密钥（如果有）">
+                <button id="joinSession">加入会话</button>
+                <div id="receiverStatus" class="status"></div>
+            </div>
+            <div class="file-list" id="receiverFileList"></div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html> 
