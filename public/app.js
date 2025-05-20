@@ -57,6 +57,7 @@ let isRelayMode = false;
 let relayFileInfo = null;
 let relayBuffer = [];
 let relayTotalSize = 0;
+let currentFileIndex = 0;  // 添加当前文件索引
 
 // UI 元素
 const fileInput = document.getElementById('fileInput');
@@ -76,9 +77,17 @@ createSessionBtn.onclick = () => {
     isSender = true;
     localId = genSessionId();
     sessionIdSpan.textContent = localId;
-    useEncrypt = true;
-    encryptionKey = useEncrypt ? genKey() : '';
-    encryptionKeySpan.textContent = encryptionKey;
+    
+    // 询问是否启用加密
+    useEncrypt = confirm('是否启用文件加密？');
+    if (useEncrypt) {
+        encryptionKey = genKey();
+        encryptionKeySpan.textContent = encryptionKey;
+    } else {
+        encryptionKey = '';
+        encryptionKeySpan.textContent = '未启用加密';
+    }
+    
     sessionInfo.style.display = 'block';
     connectWS();
 };
@@ -87,7 +96,17 @@ joinSessionBtn.onclick = () => {
     isSender = false;
     localId = genSessionId();
     remoteId = joinSessionId.value.trim();
-    encryptionKey = joinEncryptionKey.value.trim();
+    
+    // 如果输入了密钥，则启用加密
+    const key = joinEncryptionKey.value.trim();
+    if (key) {
+        encryptionKey = key;
+        useEncrypt = true;
+    } else {
+        encryptionKey = '';
+        useEncrypt = false;
+    }
+    
     connectWS();
 };
 
@@ -95,11 +114,9 @@ fileInput.onchange = () => {
     files = Array.from(fileInput.files);
     senderFileList.innerHTML = '';
     files.forEach(f => {
-        const div = document.createElement('div');
-        div.className = 'file-item';
-        div.textContent = `${f.name} (${formatSize(f.size)})`;
-        senderFileList.appendChild(div);
+        addFileToList(f, senderFileList, false);
     });
+    updateStatus(`已选择 ${files.length} 个文件`, 'success');
 };
 
 function connectWS() {
@@ -363,13 +380,23 @@ function setupDataChannel() {
         console.error('WebRTC 数据通道错误:', e);
         updateStatus('数据通道错误', 'error');
     };
-    dc.onmessage = (e) => {
+    dc.onmessage = async (e) => {
         if (!isSender) {
             if (typeof e.data === 'string') {
                 // 处理文件元数据
                 try {
                     const meta = JSON.parse(e.data);
                     console.log(`收到 WebRTC 文件元数据: ${meta.name} (${formatSize(meta.size)})`);
+                    
+                    // 检查是否是加密文件但没有密钥
+                    if (meta.isEncrypted && !encryptionKey) {
+                        console.log('加密文件需要密钥');
+                        updateStatus('这是加密文件，请输入密钥', 'error');
+                        // 关闭数据通道
+                        dc.close();
+                        return;
+                    }
+                    
                     fileRecvMeta = meta;
                     fileRecvBuffer = [];
                     fileRecvSize = 0;
@@ -379,8 +406,19 @@ function setupDataChannel() {
                 }
             } else {
                 // 处理文件二进制数据
-                fileRecvBuffer.push(e.data);
-                fileRecvSize += e.data.byteLength;
+                let data = e.data;
+                if (encryptionKey) {
+                    try {
+                        data = await decryptData(new Uint8Array(data), encryptionKey);
+                    } catch (err) {
+                        console.error('解密数据失败:', err);
+                        updateStatus('解密数据失败', 'error');
+                        return;
+                    }
+                }
+                
+                fileRecvBuffer.push(data);
+                fileRecvSize += data.byteLength;
                 if (fileRecvMeta) {
                     updateFileProgress(fileRecvMeta.name, fileRecvSize / fileRecvMeta.size * 100, receiverFileList);
                     if (fileRecvSize >= fileRecvMeta.size) {
@@ -391,6 +429,16 @@ function setupDataChannel() {
                         a.href = URL.createObjectURL(blob);
                         a.download = fileRecvMeta.name;
                         a.click();
+                        
+                        // 更新状态显示
+                        const currentFile = fileRecvMeta.currentFile || 0;
+                        const totalFiles = fileRecvMeta.totalFiles || 0;
+                        if (currentFile < totalFiles) {
+                            updateStatus(`等待接收下一个文件 (${currentFile + 1}/${totalFiles})`, 'info');
+                        } else {
+                            updateStatus('所有文件接收完成', 'success');
+                        }
+                        
                         fileRecvBuffer = [];
                         fileRecvSize = 0;
                         fileRecvMeta = null;
@@ -405,35 +453,71 @@ function sendFileList() {
     if (isRelayMode) {
         console.log('使用服务器中继模式发送文件');
         // 中继模式发送
-        files.forEach(file => {
-            console.log(`开始中继传输文件: ${file.name} (${formatSize(file.size)})`);
-            sendFileChunksRelay(file);
-        });
+        currentFileIndex = 0;
+        sendNextFileRelay();
     } else {
         console.log('使用 WebRTC 模式发送文件');
         // WebRTC 模式发送
-        files.forEach(file => {
-            console.log(`开始 WebRTC 传输文件: ${file.name} (${formatSize(file.size)})`);
-            dc.send(JSON.stringify({ 
-                name: file.name, 
-                size: file.size, 
-                type: file.type 
-            }));
-            sendFileChunks(file);
-        });
+        currentFileIndex = 0;
+        sendNextFile();
     }
+}
+
+function sendNextFile() {
+    if (currentFileIndex >= files.length) {
+        console.log('所有文件发送完成');
+        updateStatus('所有文件发送完成', 'success');
+        return;
+    }
+    
+    const file = files[currentFileIndex];
+    console.log(`开始 WebRTC 传输文件: ${file.name} (${formatSize(file.size)})`);
+    dc.send(JSON.stringify({ 
+        name: file.name, 
+        size: file.size, 
+        type: file.type,
+        isEncrypted: useEncrypt,
+        totalFiles: files.length,
+        currentFile: currentFileIndex + 1
+    }));
+    sendFileChunks(file);
+}
+
+function sendNextFileRelay() {
+    if (currentFileIndex >= files.length) {
+        console.log('所有文件发送完成');
+        updateStatus('所有文件发送完成', 'success');
+        return;
+    }
+    
+    const file = files[currentFileIndex];
+    console.log(`开始中继传输文件: ${file.name} (${formatSize(file.size)})`);
+    sendFileChunksRelay(file);
 }
 
 function sendFileChunks(file) {
     const chunkSize = 16384;
     let offset = 0;
     const reader = new FileReader();
-    reader.onload = (e) => {
+    
+    reader.onload = async (e) => {
         if (dc.readyState !== 'open') {
             console.warn('WebRTC 数据通道未打开');
             return;
         }
-        dc.send(e.target.result);
+        
+        let data = e.target.result;
+        if (useEncrypt && encryptionKey) {
+            try {
+                data = await encryptData(data, encryptionKey);
+            } catch (err) {
+                console.error('加密数据失败:', err);
+                updateStatus('加密数据失败', 'error');
+                return;
+            }
+        }
+        
+        dc.send(data);
         offset += e.target.result.byteLength;
         if (senderFileList) {
             updateFileProgress(file.name, offset / file.size * 100, senderFileList);
@@ -442,8 +526,17 @@ function sendFileChunks(file) {
             readNext();
         } else {
             console.log(`WebRTC 文件传输完成: ${file.name}`);
+            // 更新状态显示
+            const currentFile = currentFileIndex + 1;
+            const totalFiles = files.length;
+            updateStatus(`文件传输进度: ${currentFile}/${totalFiles}`, 'success');
+            
+            // 发送下一个文件
+            currentFileIndex++;
+            setTimeout(() => sendNextFile(), 100);  // 短暂延迟后发送下一个文件
         }
     };
+    
     function readNext() {
         const chunk = file.slice(offset, offset + chunkSize);
         reader.readAsArrayBuffer(chunk);
@@ -459,12 +552,21 @@ function sendFileChunksRelay(file) {
         const chunk = file.slice(offset, offset + chunkSize);
         const reader = new FileReader();
         
-        reader.onload = (e) => {
+        reader.onload = async (e) => {
             const arrayBuffer = e.target.result;
-            const uint8Array = new Uint8Array(arrayBuffer);
+            let data = new Uint8Array(arrayBuffer);
             
-            // 使用 Array.from 和 map 来转换每个字节为十六进制字符串
-            const hexString = Array.from(uint8Array)
+            if (useEncrypt && encryptionKey) {
+                try {
+                    data = await encryptData(data, encryptionKey);
+                } catch (err) {
+                    console.error('加密数据失败:', err);
+                    updateStatus('加密数据失败', 'error');
+                    return;
+                }
+            }
+            
+            const hexString = Array.from(data)
                 .map(b => b.toString(16).padStart(2, '0'))
                 .join('');
             
@@ -473,7 +575,10 @@ function sendFileChunksRelay(file) {
                 callerId: localId,
                 recipientId: remoteId,
                 chunk: hexString,
-                isLast: offset + chunkSize >= file.size
+                isLast: offset + chunkSize >= file.size,
+                fileName: file.name,
+                currentFile: currentFileIndex + 1,
+                totalFiles: files.length
             }));
             
             offset += chunkSize;
@@ -481,6 +586,14 @@ function sendFileChunksRelay(file) {
                 readNextChunk();
             } else {
                 console.log(`中继文件传输完成: ${file.name}`);
+                // 更新状态显示
+                const currentFile = currentFileIndex + 1;
+                const totalFiles = files.length;
+                updateStatus(`文件传输进度: ${currentFile}/${totalFiles}`, 'success');
+                
+                // 发送下一个文件
+                currentFileIndex++;
+                setTimeout(() => sendNextFileRelay(), 100);  // 短暂延迟后发送下一个文件
             }
             
             // 更新进度
@@ -498,7 +611,17 @@ function sendFileChunksRelay(file) {
 function addFileToList(file, container, isReceiver) {
     const div = document.createElement('div');
     div.className = 'file-item';
-    div.innerHTML = `${file.name} (${formatSize(file.size)})<div class='progress'><div class='progress-bar' style='width:0%'></div></div>`;
+    div.innerHTML = `
+        <div class="file-info">
+            <span class="file-name">${file.name}</span>
+            <span class="file-size">${formatSize(file.size)}</span>
+        </div>
+        <div class="progress">
+            <div class="progress-bar" style="width:0%"></div>
+            <span class="progress-text">0%</span>
+        </div>
+    `;
+    
     if (isReceiver) {
         const btn = document.createElement('button');
         btn.textContent = '接收';
@@ -512,7 +635,6 @@ function addFileToList(file, container, isReceiver) {
                 updateStatus('数据通道未建立', 'error');
                 return;
             }
-            // 开始接收文件内容
             receiveFile(file);
         };
         div.appendChild(btn);
@@ -528,10 +650,12 @@ function updateFileProgress(fileName, percent, container) {
     const items = container.querySelectorAll('.file-item');
     let found = false;
     items.forEach(item => {
-        if (item.textContent.includes(fileName)) {
+        if (item.querySelector('.file-name').textContent === fileName) {
             const bar = item.querySelector('.progress-bar');
-            if (bar) {
+            const text = item.querySelector('.progress-text');
+            if (bar && text) {
                 bar.style.width = percent + '%';
+                text.textContent = Math.round(percent) + '%';
                 found = true;
             }
         }
@@ -572,7 +696,8 @@ function switchToRelay(data) {
     // TODO: 实现服务器中继模式下的文件传输
 }
 
-function handleRelayData(data) {
+// 修改中继数据处理
+async function handleRelayData(data) {
     if (!isSender) {
         const { chunk, isLast } = data;
         console.log('收到中继数据块:', chunk ? chunk.length / 2 : 0, '字节');
@@ -584,8 +709,19 @@ function handleRelayData(data) {
                 bytes[i / 2] = parseInt(chunk.substr(i, 2), 16);
             }
             
-            relayBuffer.push(bytes.buffer);
-            relayTotalSize += bytes.length;
+            let data = bytes;
+            if (encryptionKey) {
+                try {
+                    data = await decryptData(bytes, encryptionKey);
+                } catch (err) {
+                    console.error('解密数据失败:', err);
+                    updateStatus('解密数据失败', 'error');
+                    return;
+                }
+            }
+            
+            relayBuffer.push(data);
+            relayTotalSize += data.byteLength;
             
             if (relayFileInfo) {
                 updateFileProgress(relayFileInfo[0].name, relayTotalSize / relayFileInfo[0].size * 100, receiverFileList);
@@ -637,17 +773,18 @@ function switchToRelayMode() {
     
     if (isSender) {
         console.log('发送中继请求，文件信息:', files);
-        console.log('接收方 ID:', remoteId);  // 添加日志
+        console.log('接收方 ID:', remoteId);
         // 发送方请求中继
         ws.send(JSON.stringify({
             type: CPKT_RELAY_REQUEST,
             callerId: localId,
-            recipientId: remoteId,  // 使用保存的接收方 ID
+            recipientId: remoteId,
             fileInfo: files.map(file => ({
                 name: file.name,
                 size: file.size,
                 type: file.type
-            }))
+            })),
+            isEncrypted: useEncrypt  // 添加加密标志
         }));
     }
 }
@@ -655,9 +792,25 @@ function switchToRelayMode() {
 // 处理中继请求
 function handleRelayRequest(data) {
     if (!isSender) {
-        const { callerId, fileInfo } = data;
+        const { callerId, fileInfo, isEncrypted } = data;
         console.log(`收到中继请求，来自: ${callerId}`);
         console.log('文件信息:', fileInfo);
+        console.log('是否加密:', isEncrypted);
+        
+        // 如果是加密文件但没有密钥，直接提示
+        if (isEncrypted && !encryptionKey) {
+            console.log('加密文件需要密钥');
+            updateStatus('这是加密文件，请输入密钥', 'error');
+            ws.send(JSON.stringify({
+                type: CPKT_RELAY_REJECT,
+                callerId,
+                recipientId: localId,
+                accept: false,
+                reason: 'need_key'
+            }));
+            return;
+        }
+        
         relayFileInfo = fileInfo;
         
         // 显示文件信息
@@ -699,4 +852,60 @@ testRelayBtn.onclick = () => {
     console.log('手动切换到中继模式');
     switchToRelayMode();
 };
-document.body.appendChild(testRelayBtn); 
+document.body.appendChild(testRelayBtn);
+
+// 添加加密相关的函数
+async function encryptData(data, key) {
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(key);
+    const keyHash = await crypto.subtle.digest('SHA-256', keyData);
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        keyHash,
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt']
+    );
+    
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encryptedData = await crypto.subtle.encrypt(
+        {
+            name: 'AES-GCM',
+            iv: iv
+        },
+        cryptoKey,
+        data
+    );
+    
+    // 将 IV 和加密数据合并
+    const result = new Uint8Array(iv.length + encryptedData.byteLength);
+    result.set(iv);
+    result.set(new Uint8Array(encryptedData), iv.length);
+    return result;
+}
+
+async function decryptData(encryptedData, key) {
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(key);
+    const keyHash = await crypto.subtle.digest('SHA-256', keyData);
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        keyHash,
+        { name: 'AES-GCM' },
+        false,
+        ['decrypt']
+    );
+    
+    // 分离 IV 和加密数据
+    const iv = encryptedData.slice(0, 12);
+    const data = encryptedData.slice(12);
+    
+    return await crypto.subtle.decrypt(
+        {
+            name: 'AES-GCM',
+            iv: iv
+        },
+        cryptoKey,
+        data
+    );
+} 
