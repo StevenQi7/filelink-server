@@ -1,5 +1,12 @@
 import { WebSocketServer } from "ws";
 import { v4 as uuidv4 } from 'uuid';
+import path from "path";
+import { fileURLToPath } from "url";
+import express from "express";
+import http from "http";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const CPKT_LOGOUT = -1
 const CPKT_LOGIN = 0
@@ -33,11 +40,23 @@ const decodeString = (arr) => {
     return textDec.decode(arr)
 }
 
+const app = express();
+app.use(express.static(path.join(__dirname, '../public')));
+
+// 创建 HTTP 服务器
+const server = http.createServer(app);
+
+// 监听端口
+const PORT = process.env.PORT || 8000;
+server.listen(PORT, () => {
+    console.log(`HTTP server is listening on http://0.0.0.0:${PORT}`);
+});
+
+// 使用同一个 HTTP 服务器创建 WebSocket 服务器
 const wss = new WebSocketServer({
-    host: "0.0.0.0",
-    port: 8001,
+    server: server
 }, () => {
-    console.log("WebSocket server is listening on ws://0.0.0.0:8001");
+    console.log(`WebSocket server is listening on ws://0.0.0.0:${PORT}`);
 });
 
 const sessions = new Map();
