@@ -1,12 +1,5 @@
 import { WebSocketServer } from "ws";
-import { randomBytes } from "crypto";
-import path from "path";
-import { fileURLToPath } from "url";
-import express from "express";
-import http from "http";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { v4 as uuidv4 } from 'uuid';
 
 const CPKT_LOGOUT = -1
 const CPKT_LOGIN = 0
@@ -40,48 +33,14 @@ const decodeString = (arr) => {
     return textDec.decode(arr)
 }
 
-const app = express();
-app.use(express.static(path.join(__dirname, '../public')));
-
-// 创建 HTTP 服务器
-const server = http.createServer(app);
-
-// 监听端口
-const PORT = process.env.PORT || 8000;
-server.listen(PORT, () => {
-    console.log(`HTTP server is listening on http://0.0.0.0:${PORT}`);
-});
-
-// 使用同一个 HTTP 服务器创建 WebSocket 服务器
 const wss = new WebSocketServer({
-    server: server
+    host: "0.0.0.0",
+    port: 8001,
 }, () => {
-    console.log(`WebSocket server is listening on ws://0.0.0.0:${PORT}`);
+    console.log("WebSocket server is listening on ws://0.0.0.0:8001");
 });
 
 const sessions = new Map();
-const relayBuffers = new Map(); // 存储中继数据
-const RELAY_CHUNK_SIZE = 16384; // 16KB 的块大小
-
-// 添加中继相关的消息类型
-const SPKT_RELAY_READY = 20;    // 中继就绪
-const SPKT_RELAY_DATA = 21;     // 中继数据
-const SPKT_RELAY_COMPLETE = 22; // 中继完成
-const SPKT_RELAY_ERROR = 23;    // 中继错误
-
-// 添加中继相关的客户端消息类型
-const CPKT_RELAY_REQUEST = 30;  // 请求中继
-const CPKT_RELAY_ACCEPT = 31;   // 接受中继
-const CPKT_RELAY_REJECT = 32;   // 拒绝中继
-
-const generateSessionId = () => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < 6; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-};
 
 const deleteSession = sessionId => {
     console.log("Deleting session:", sessionId);
@@ -89,7 +48,7 @@ const deleteSession = sessionId => {
 }
 
 wss.on("connection", conn => {
-    console.log("New connection established");
+    console.log("Connection established");
 
     conn.on("message", (data, isBinary) => {
         try {
@@ -141,9 +100,14 @@ function handleBinaryData(conn, _data) {
     const packetDataView = new DataView(packet.buffer)
     const packetId = packetDataView.getInt8(0)
 
+    console.log("[DEBUG] handleBinaryData - 收到二进制数据，大小:", packet.length, "包类型:", packetId)
+
     if (packetId == CPKT_RELAY) {
-        const targetId = decodeString(packet.subarray(1, 1 + 36))
-        const callerId = decodeString(packet.subarray(1 + 36, 1 + 36 + 36))
+        const targetId = decodeString(packet.subarray(1, 1 + 36)).replace(/\0/g, '')
+        const callerId = decodeString(packet.subarray(1 + 36, 1 + 36 + 36)).replace(/\0/g, '')
+        
+        console.log("[DEBUG] CPKT_RELAY - 目标ID:", `'${targetId}'`, "发送方ID:", `'${callerId}'`)
+        console.log("[DEBUG] 当前活跃会话:", Array.from(sessions.keys()))
 
         if (!conn._relay_packets) {
             conn._relay_packets = 1
@@ -154,6 +118,7 @@ function handleBinaryData(conn, _data) {
 
         let recipientConn;
         if ((recipientConn = sessions.get(targetId))) {
+            console.log("[DEBUG] 找到目标会话，准备转发数据");
             // if(recipientConn.bufferedAmount > 100_000_000) {    // 100MB
             //     console.log("High bufferedAmount:", recipientConn.bufferedAmount)
             // }
@@ -186,9 +151,12 @@ function handleBinaryData(conn, _data) {
             }
 
             packetDataView.setInt8(0, SPKT_RELAY)   // Change to server packet type before sending back
+            console.log("[DEBUG] 准备发送数据给目标，数据包大小:", packet.length)
             recipientConn.send(packet)
+            console.log("[DEBUG] 数据已发送给目标")
         }
         else {
+            console.log("[DEBUG] 未找到目标会话:", `'${targetId}'`)
             return closeConnWithReason(conn, "[CPKT_RELAY] Specified targetId does not exist", targetId)
         }
     }
@@ -210,80 +178,54 @@ function handleTextMessage(conn, message) {
         console.error("Invalid json: ", message);
         return conn.close();
     }
+    //console.log(data);
 
     if (data.type == CPKT_LOGIN) { // login
+
         console.log("Login requested with session ", data.id)
         if (!data.id) return closeConnWithReason(conn, "[login] Didn't specify id");
-        if (typeof data.id !== "string" || data.id.length != 6) return closeConnWithReason(conn, "[login] Invalid ID " + data.id);
-        
-        // 如果是接收方加入，检查目标会话是否存在
-        if (data.targetId) {
-            const targetSession = sessions.get(data.targetId);
-            if (!targetSession) {
-                return closeConnWithReason(conn, "[login] Target session not found " + data.targetId);
-            }
-        } else if (sessions.has(data.id)) {
-            // 如果是发送方创建会话，检查 ID 是否已被占用
-            return closeConnWithReason(conn, "[login] Session ID already taken " + data.id);
-        }
+        if (typeof data.id !== "string" && data.id.length != 36) return closeConnWithReason(conn, "[login] Invalid ID " + data.id);
+        if (sessions.has(data.id)) return closeConnWithReason(conn, "[login] Session ID already taken " + data.id)
 
         if (conn._session === undefined) {
             conn._session = {}
             console.log("_session doesn't exist yet, adding first session ", data.id)
             conn._session.ids = [data.id]
-        } else {
+        }
+        else {
             console.log("_session list exists, adding session ", data.id)
             conn._session.ids.push(data.id)
         }
 
         sessions.set(data.id, conn);
 
-        // 如果是接收方加入，通知发送方
-        if (data.targetId) {
-            const targetSession = sessions.get(data.targetId);
-            if (targetSession) {
-                targetSession.send(JSON.stringify({
-                    type: SPKT_OFFER,
-                    targetId: data.targetId,
-                    callerId: data.id,
-                    ready: true,
-                    offer: null  // 添加 offer 字段，初始为 null
-                }));
-            }
-        }
-
         return conn.send(JSON.stringify({ targetId: data.id, success: true, type: data.type }));
     }
 
-    if (!conn._session) return conn.close();
+    if (!conn._session) return conn.close(); // client has to send type 0 first >:(
 
     if (data.type == CPKT_OFFER) { // offer
-        console.log("收到 offer 请求:", data);
+        // console.log("offer", conn._session.id + " -> " + data.recipientId, data);
         if (!data.offer) return closeConnWithReason(conn, "[offer] Didn't specify offer");
         if (!data.callerId) return closeConnWithReason(conn, "[offer] Didn't specify callerId");
-        if (!sessions.get(data.callerId)) return closeConnWithReason(conn, "[offer] Specified callerId does not exist");
+        if (!sessions.get(data.callerId)) return closeConnWithReason(conn, "[offer] Specified callerId does not exist")
 
         let recipientConn;
         if ((recipientConn = sessions.get(data.recipientId))) {
-            console.log("转发 offer 到接收方:", data.recipientId);
             recipientConn.send(JSON.stringify({
-                type: SPKT_OFFER,
+                type: SPKT_OFFER, // offer type
                 targetId: data.recipientId,
                 callerId: data.callerId,
-                offer: data.offer
+                offer: data.offer,
             }));
             return conn.send(JSON.stringify({
-                targetId: data.callerId,
-                success: true,
-                type: data.type
+                targetId: data.callerId, success: true, type: data.type,
             }));
         } else {
-            console.log("[CPKT_OFFER] recipient did not exist:", data.recipientId);
+            console.log("[CPKT_OFFER] recipient did not exist:", data.recipientId)
             return conn.send(JSON.stringify({
-                targetId: data.callerId,
-                success: false,
-                type: data.type,
-                msg: "Quick Share could not be found. Do not close the browser window before the transfer is complete."
+                targetId: data.callerId, success: false, type: data.type,
+                msg: "Quick Share could not be found. Do not close the browser window before the transfer is complete.",
             }));
         }
     } else if (data.type == CPKT_ANSWER) { // answer
@@ -355,7 +297,7 @@ function handleTextMessage(conn, message) {
 
         let recipientConn;
         if ((recipientConn = sessions.get(data.recipientId))) {
-            const newRtcSessionId = generateSessionId()
+            const newRtcSessionId = uuidv4()
 
             recipientConn.send(JSON.stringify({
                 type: SPKT_SWITCH_TO_FALLBACK,
@@ -422,105 +364,5 @@ function handleTextMessage(conn, message) {
                 msg: "recipient does not exist",
             }));
         }
-    } else if (data.type === CPKT_RELAY_REQUEST) {
-        handleRelayRequest(conn, data);
-        return;
-    } else if (data.type === CPKT_RELAY_ACCEPT || data.type === CPKT_RELAY_REJECT) {
-        handleRelayResponse(conn, data);
-        return;
-    } else if (data.type === SPKT_RELAY_DATA) {
-        handleRelayData(conn, data);
-        return;
-    }
-}
-
-// 处理中继请求
-function handleRelayRequest(conn, data) {
-    const { callerId, recipientId, fileInfo } = data;
-    const targetSession = sessions.get(recipientId);
-    
-    if (!targetSession) {
-        conn.send(JSON.stringify({
-            type: SPKT_RELAY_ERROR,
-            msg: '接收方不存在'
-        }));
-        return;
-    }
-
-    // 通知接收方有中继请求
-    targetSession.send(JSON.stringify({
-        type: SPKT_RELAY_READY,
-        callerId,
-        fileInfo
-    }));
-
-    // 创建中继缓冲区
-    relayBuffers.set(callerId, {
-        recipientId,
-        buffer: [],
-        fileInfo,
-        totalSize: 0
-    });
-}
-
-// 处理中继响应
-function handleRelayResponse(conn, data) {
-    const { callerId, recipientId, accept } = data;
-    const senderSession = sessions.get(callerId);
-    
-    if (!senderSession) {
-        conn.send(JSON.stringify({
-            type: SPKT_RELAY_ERROR,
-            msg: '发送方不存在'
-        }));
-        return;
-    }
-
-    if (accept) {
-        // 通知发送方可以开始传输
-        senderSession.send(JSON.stringify({
-            type: SPKT_RELAY_READY,
-            recipientId
-        }));
-    } else {
-        // 通知发送方被拒绝
-        senderSession.send(JSON.stringify({
-            type: SPKT_RELAY_ERROR,
-            msg: '接收方拒绝接收文件'
-        }));
-        // 清理中继缓冲区
-        relayBuffers.delete(callerId);
-    }
-}
-
-// 处理中继数据
-function handleRelayData(conn, data) {
-    const { callerId, recipientId, chunk, isLast } = data;
-    const targetSession = sessions.get(recipientId);
-    
-    if (!targetSession) {
-        conn.send(JSON.stringify({
-            type: SPKT_RELAY_ERROR,
-            msg: '接收方不存在'
-        }));
-        return;
-    }
-
-    // 转发数据块
-    targetSession.send(JSON.stringify({
-        type: SPKT_RELAY_DATA,
-        callerId,
-        chunk,
-        isLast
-    }));
-
-    if (isLast) {
-        // 通知接收方传输完成
-        targetSession.send(JSON.stringify({
-            type: SPKT_RELAY_COMPLETE,
-            callerId
-        }));
-        // 清理中继缓冲区
-        relayBuffers.delete(callerId);
     }
 }
