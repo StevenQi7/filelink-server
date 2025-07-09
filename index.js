@@ -10,6 +10,7 @@ const CPKT_RELAY = 4
 const CPKT_SWITCH_TO_FALLBACK = 5
 const CPKT_SWITCH_TO_FALLBACK_ACK = 6
 const CPKT_P2P_FAILED = 7
+const CPKT_CANCEL_TRANSFER = 8
 
 const SPKT_OFFER = 11
 const SPKT_ANSWER = 12
@@ -18,6 +19,7 @@ const SPKT_RELAY = 14
 const SPKT_SWITCH_TO_FALLBACK = 15
 const SPKT_SWITCH_TO_FALLBACK_ACK = 16
 const SPKT_P2P_FAILED = 17
+const SPKT_CANCEL_TRANSFER = 18
 const SPKT_RELAY_BUDGET = 99
 
 const DEFAULT_PACKET_BUDGET = 256
@@ -350,6 +352,32 @@ function handleTextMessage(conn, message) {
             }));
         } else {
             console.log("[CPKT_P2P_FAILED] recipient does not exist!")
+            return conn.send(JSON.stringify({
+                targetId: data.callerId, success: false, type: data.type,
+                msg: "recipient does not exist",
+            }));
+        }
+    } else if (data.type == CPKT_CANCEL_TRANSFER) {
+        if (!data.callerId) return closeConnWithReason(conn, "[CPKT_CANCEL_TRANSFER] Didn't specify callerId")
+        if (!data.recipientId) return closeConnWithReason(conn, "[CPKT_CANCEL_TRANSFER] Didn't specify recipientId")
+        if (!sessions.get(data.callerId)) return closeConnWithReason(conn, "[CPKT_CANCEL_TRANSFER] Specified callerId does not exist")
+
+        console.log("[CPKT_CANCEL_TRANSFER] Request from:", data.callerId, "to", data.recipientId)
+
+        let recipientConn;
+        if ((recipientConn = sessions.get(data.recipientId))) {
+            recipientConn.send(JSON.stringify({
+                type: SPKT_CANCEL_TRANSFER,
+                targetId: data.recipientId,
+                callerId: data.callerId,
+                msg: data.msg || "Transfer cancelled"
+            }));
+
+            return conn.send(JSON.stringify({
+                targetId: data.callerId, success: true, type: data.type,
+            }));
+        } else {
+            console.log("[CPKT_CANCEL_TRANSFER] recipient does not exist!")
             return conn.send(JSON.stringify({
                 targetId: data.callerId, success: false, type: data.type,
                 msg: "recipient does not exist",
