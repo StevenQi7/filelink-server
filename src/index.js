@@ -49,7 +49,7 @@ app.use(express.static(path.join(__dirname, '../public')));
 const server = http.createServer(app);
 
 // 监听端口
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || 80;
 server.listen(PORT, () => {
     console.log(`HTTP server is listening on http://0.0.0.0:${PORT}`);
 });
